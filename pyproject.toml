@@ -1,0 +1,38 @@
+[project]
+name = "ITN-engine"
+version = "0.1.0"
+description = "Default template for PDM package"
+authors = [
+    {name = "Beomseok Hong", email = "bshong@lguplus.co.kr"},
+    {name = "", email = "rokmc1180k@gmail.com"},
+]
+dependencies = [
+    "onnx>=1.17.0",
+    "onnxruntime>=1.19.2",
+    "transformers>=4.45.2",
+    "optimum>=1.23.2",
+    "torch>=2.4.1",
+    "pyahocorasick>=2.1.0",
+]
+requires-python = ">=3.8"
+readme = "README.md"
+license = {text = "MIT"}
+
+
+[tool.pdm]
+distribution = true
+
+[tool.pdm.resolution]
+respect-source-order = true
+
+[[tool.pdm.source]]
+url = "https://download.pytorch.org/whl/cpu"
+name = "torch"
+
+[[tool.pdm.source]]
+name = "pypi"
+url = "https://pypi.org/simple"
+
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
