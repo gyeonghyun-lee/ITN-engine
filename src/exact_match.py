@@ -5,46 +5,14 @@ from entity import ItnData, ItnEntity, ItnEntityStatus
 from typing import List
 
 
-class ExactMatcher:
-    def __init__(self, dict_path='./dictionary/exact_match'):
-        self.system_dictionary, self.system_matcher = self.load_system_dictionary(dict_path)
-        self.user_dictionary, self.user_matcher = self.load_user_dictionary(dict_path)
-    
-    def load_system_dictionary(self, system_dict_path):
+class DictionaryMatcher:
+    def load_dictionary(self, dict_path, filename_pattern):
         dictionary = dict()
         matcher = ahocorasick.Automaton()
-        system_filename_pattern = os.path.join(system_dict_path, 'system_*.dict')
-        system_files = glob.glob(system_filename_pattern)
-    
-        print(f"Loading system dictionaries: {[os.path.basename(filename) for filename in system_files]}")
-        for filename in system_files:
-            with open(filename, 'r', encoding='utf8') as f:
-                for line_num, line in enumerate(f.readlines()):
-                    entity = line.strip()
-                    if not entity or entity.startswith('#'):
-                        continue
-                    old, new = self.parse_entity(entity, matcher)
-                    
-                    # check if the entity already exists
-                    val = matcher.get(old, None)
-                    if val:
-                        print(f"'{old},{val}' already exists. '{old},{new}' in {os.path.basename(filename)} (line {line_num+1}) cannot be added.")
-                    else:
-                        idx = len(dictionary) + 1
-                        matcher.add_word(old, (idx, old))  # key, (idx, key)
-                        dictionary[idx] = new
-                    
-        matcher.make_automaton()
-        return dictionary, matcher
-    
-    def load_user_dictionary(self, user_dict_path):
-        dictionary = dict()
-        matcher = ahocorasick.Automaton()
-        user_filename_pattern = os.path.join(user_dict_path, 'user_*.dict')
-        user_files = glob.glob(user_filename_pattern)
+        file_search_pattern = os.path.join(dict_path, filename_pattern)
+        files = glob.glob(file_search_pattern)
 
-        print(f"Loading user dictionaries: {[os.path.basename(filename) for filename in user_files]}")
-        for filename in user_files:
+        for filename in files:
             with open(filename, 'r', encoding='utf8') as f:
                 for line_num, line in enumerate(f.readlines()):
                     entity = line.strip()
@@ -63,7 +31,7 @@ class ExactMatcher:
                     
         matcher.make_automaton()
         return dictionary, matcher
-    
+
     def parse_entity(self, entity, matcher):
         if ',' in entity:
             words = entity.split(',')
@@ -77,17 +45,19 @@ class ExactMatcher:
             old, new = entity, entity
         
         return old, new
+
+
+class SystemDictionaryMatcher(DictionaryMatcher):
+    def __init__(self, dict_path):
+        self.dictionary, self.matcher = self.load_system_dictionary(dict_path)
     
-    def process(self, entities: List[ItnEntity]) -> List[ItnEntity]:
-        # 1. find matches in system dictionary (ignore whitespaces)
-        entities = self.match_system_dictionary(entities)
+    def load_system_dictionary(self, dict_path):
+        filename_pattern = 'system_*.dict'
 
-        # 2. find matches in user dictionary (allow whitespaces)
-        entities = self.match_user_dictionary(entities)
-
-        return entities
-
-    def match_system_dictionary(self, entities: List[ItnEntity], idx_start=-1) -> List[ItnEntity]:
+        dictionary, matcher = self.load_dictionary(dict_path, filename_pattern)
+        return dictionary, matcher
+    
+    def match_dictionary(self, entities: List[ItnEntity], idx_start=-1) -> List[ItnEntity]:
         if idx_start == -1:
             idx = entities[0].idx
         else:
@@ -107,7 +77,7 @@ class ExactMatcher:
                 continue
             
             prev_text_end = 0
-            pos_word_list = list(self.system_matcher.iter_long(itn_text))
+            pos_word_list = list(self.matcher.iter_long(itn_text))
             if not pos_word_list:
                 entity.idx = idx
                 entity_list.append(entity)
@@ -115,29 +85,60 @@ class ExactMatcher:
                 continue
 
             for last_char_pos, (key_id, word_no_space) in pos_word_list:
-                word_start = last_char_pos + 1 - len(word_no_space)
-                word_end = last_char_pos + 1
-                text_start = idx_itn2text[word_start]
-                text_end = idx_itn2text[word_end]
+                matched_start = last_char_pos + 1 - len(word_no_space)
+                matched_end = last_char_pos
+                text_start = idx_itn2text[matched_start]
+                text_end = idx_itn2text[matched_end]
                 
+                # exact match 변환 시 어절 단위로 변환함
+                right_blank_idx = text.find(' ', text_end+1)
+                itn_text = f"{self.dictionary[key_id]}"
+                if right_blank_idx != -1:
+                    word_suffix = text[text_end+1:right_blank_idx]
+                    itn_text = f"{self.dictionary[key_id]}{word_suffix}"
+                    text_end = right_blank_idx
+
+                # 변환된 부분과 아닌 부분을 분리
                 if text_start == prev_text_end:
-                    entity_list.append(ItnEntity(idx=idx, text=text[text_start:text_end], itn_text=self.system_dictionary[key_id], status=ItnEntityStatus.EXACT))
+                    exact_entity = ItnEntity(idx=idx, text=text[text_start:text_end+1], itn_text=itn_text, status=ItnEntityStatus.EXACT)
+                    entity_list.append(exact_entity)
                     idx += 1
                 elif text_start > prev_text_end:
-                    entity_list.append(ItnEntity(idx=idx, text=text[prev_text_end:text_start], status=status))
-                    entity_list.append(ItnEntity(idx=idx+1, text=text[text_start:text_end], itn_text=self.system_dictionary[key_id], status=ItnEntityStatus.EXACT))
+                    init_entity = ItnEntity(idx=idx, text=text[prev_text_end:text_start], status=status)
+                    if prev_text_end == 0:
+                        init_entity.blank_l = entity.blank_l
+                    exact_entity = ItnEntity(idx=idx+1, text=text[text_start:text_end+1], itn_text=itn_text, status=ItnEntityStatus.EXACT)
+                    entity_list.append(init_entity)
+                    entity_list.append(exact_entity)
                     idx += 2
                 else:
-                    raise ValueError
-                prev_text_end = text_end
-            
+                    # multi-match in the same eojeol
+                    # do nothing and skip the latter match
+                    print(f"'{word_no_space}' is skipped in {itn_text}.")
+                    
+                prev_text_end = text_end+1
+                
             if prev_text_end < len(text):
-                entity_list.append(ItnEntity(idx=idx, text=text[prev_text_end:], status=ItnEntityStatus.INIT))
+                init_entity = ItnEntity(idx=idx, text=text[prev_text_end:], status=ItnEntityStatus.INIT)
+                if prev_text_end == 0:
+                    init_entity.blank_l = entity.blank_l
+                entity_list.append(init_entity)
                 idx += 1
 
         return entity_list
+
+
+class UserDictionaryMatcher(DictionaryMatcher):
+    def __init__(self, dict_path):
+        self.dictionary, self.matcher = self.load_user_dictionary(dict_path)
     
-    def match_user_dictionary(self, entities: List[ItnEntity], idx_start=-1) -> List[ItnEntity]:
+    def load_user_dictionary(self, dict_path):
+        filename_pattern = 'user_*.dict'
+
+        dictionary, matcher = self.load_dictionary(dict_path, filename_pattern)
+        return dictionary, matcher   
+    
+    def match_dictionary(self, entities: List[ItnEntity], idx_start=-1) -> List[ItnEntity]:
         if idx_start == -1:
             idx = entities[0].idx
         else:
@@ -155,7 +156,7 @@ class ExactMatcher:
                 continue
             
             prev_text_end = 0
-            pos_word_list = list(self.user_matcher.iter_long(text))
+            pos_word_list = list(self.matcher.iter_long(text))
             if not pos_word_list:
                 entity.idx = idx
                 entity_list.append(entity)
@@ -164,30 +165,67 @@ class ExactMatcher:
 
             for last_char_pos, (key_id, word) in pos_word_list:
                 text_start = last_char_pos + 1 - len(word)
-                text_end = last_char_pos + 1
+                text_end = last_char_pos
+                
+                # 부분 매칭은 제외 (부분 매칭도 포함하려면 system 사전 사용)
+                if text_start > 0 and text[text_start-1] != ' ':
+                    continue
+
+                # exact match 변환 시 어절 단위로 변환함
+                right_blank_idx = text.find(' ', text_end+1)
+                itn_text = f"{self.dictionary[key_id]}"
+                if right_blank_idx != -1:
+                    word_suffix = text[text_end+1:right_blank_idx]
+                    itn_text = f"{self.dictionary[key_id]}{word_suffix}"
+                    text_end = right_blank_idx
                 
                 if text_start == prev_text_end:
-                    entity_list.append(ItnEntity(idx=idx, text=text[text_start:text_end], itn_text=self.user_dictionary[key_id], status=ItnEntityStatus.EXACT))
+                    entity_list.append(ItnEntity(idx=idx, text=text[text_start:text_end+1], itn_text=itn_text, status=ItnEntityStatus.EXACT))
                     idx += 1
                 elif text_start > prev_text_end:
-                    entity_list.append(ItnEntity(idx=idx, text=text[prev_text_end:text_start], status=status))
-                    entity_list.append(ItnEntity(idx=idx+1, text=text[text_start:text_end], itn_text=self.user_dictionary[key_id], status=ItnEntityStatus.EXACT))
+                    init_entity = ItnEntity(idx=idx, text=text[prev_text_end:text_start], status=status)
+                    if prev_text_end == 0:
+                        init_entity.blank_l = entity.blank_l
+                    entity_list.append(init_entity)
+                    entity_list.append(ItnEntity(idx=idx+1, text=text[text_start:text_end+1], itn_text=itn_text, status=ItnEntityStatus.EXACT))
                     idx += 2
                 else:
-                    raise ValueError
-                prev_text_end = text_end
+                    # multi-match in the same eojeol
+                    # do nothing and skip the latter match
+                    print(f"'{word}' is skipped in {itn_text}.")
+                    
+                prev_text_end = text_end+1
             
             if prev_text_end < len(text):
-                entity_list.append(ItnEntity(idx=idx, text=text[prev_text_end:], status=ItnEntityStatus.INIT))
+                init_entity = ItnEntity(idx=idx, text=text[prev_text_end:], status=ItnEntityStatus.INIT)
+                if prev_text_end == 0:
+                    init_entity.blank_l = entity.blank_l
+                entity_list.append(init_entity)
                 idx += 1
 
         return entity_list
 
 
+class ExactMatcher:
+    def __init__(self, dict_path='./dictionary/exact_match'):
+        self.system_matcher = SystemDictionaryMatcher(dict_path)
+        self.user_matcher = UserDictionaryMatcher(dict_path)
+    
+    def process(self, entities: List[ItnEntity]) -> List[ItnEntity]:
+        # 1. find matches in system dictionary (ignore whitespaces)
+        entities = self.system_matcher.match_dictionary(entities)
+
+        # 2. find matches in user dictionary (allow whitespaces)
+        entities = self.user_matcher.match_dictionary(entities)
+
+        return entities
+
+
 if __name__ == '__main__':
     matcher = ExactMatcher()
     data = ItnData()
-    data.add(ItnEntity(1, '주소는 서울시 은평구 사당로이십사길 삼십팔 다시 칠 입니다'))
+    # data.add(ItnEntity(1, '주소는 서울시 은평구 입니다'))
+    data.add(ItnEntity(1, '고객님의 현재 약정 기간은 12개월 입니다. 재 약정 하시겠습니까'))
     print(data)
     data.itn_entity_list = matcher.process(data.itn_entity_list)
     print(data)
